@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameAttributes:
+      - email
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ExplicitAuthFlows:
+      - USER_PASSWORD_AUTH
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders:
+      - ClientId: !Ref UserPoolClient
+        ProviderName: !GetAtt UserPool.ProviderName
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthRole.Arn
+        unauthenticated: !GetAtt UnauthRole.Arn
+  AuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action: sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud: !Ref IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: authenticated
+      Policies:
+      - PolicyName: AuthPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - mobileanalytics:PutEvents
+            - "cognito-sync:*"
+            - "cognito-identity:*"
+            Resource: "*"
+  UnauthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action: sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud: !Ref IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: unauthenticated
+      Policies:
+      - PolicyName: UnauthPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - mobileanalytics:PutEvents
+            - "cognito-sync:*"
+            Resource: "*"
+  GetCredentialsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: get-credentials
+      Runtime: python3.7
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          import boto3
+          client = boto3.client('cognito-identity')
+          def handler(event, context):
+            response = {}
+            try:
+              logger.info(json.dumps(event))
+            except Exception as e:
+              logger.error(e)
+      Handler: index.handler
+      Role: !GetAtt GetCredentialsFunctionRole.Arn
+  GetCredentialsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action: 
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+#      Policies:
+#      - PolicyName: GetCredentialsFunctionPolicy
+#        PolicyDocument:
+#          Version: 2012-10-17
+#          Statement:
+#          - Effect: Allow
+#            Action:
+#            - cognito-identity:GetId
+#            Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*"
+  AuthorizerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action: 
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: AuthorizerInvokePolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource: !GetAtt GetCredentialsFunction.Arn
+
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: v1
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          version: "1.0"
+          title: APIGatewayAuthZDemo
+        schemes:
+        - https
+        paths:
+          /:
+            get:
+              consumes:
+              - application/json
+              produces:
+              - application/json
+              responses:
+                "200":
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+              security:
+              - APIGatewayAuthZDemo-authorizer: []
+              x-amazon-apigateway-integration:
+                type: mock
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseTemplates:
+                      application/json: |
+                        {
+                          "message": "Hello"
+                        }
+                requestTemplates:
+                  application/json: |
+                    {
+                      "statusCode": 200
+                    }
+                passthroughBehavior: when_no_templates
+        securityDefinitions:
+          APIGatewayAuthZDemo-authorizer:
+            type: apiKey
+            name: Authentication
+            in: header
+            x-amazon-apigateway-authtype: cognito_user_pools
+            x-amazon-apigateway-authorizer:
+              providerARNs:
+              - !GetAtt UserPool.Arn
+              type: cognito_user_pools
+        definitions:
+          Empty:
+            type: object
+            title: Empty Schema
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolProviderName:
+    Value: !GetAtt UserPool.ProviderName
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  IdentityPoolId:
+    Value: !Ref IdentityPool
+  InvokeURL:
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/v1/"
