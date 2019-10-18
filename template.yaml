@@ -107,10 +107,35 @@ Resources:
                 IdentityId = response['IdentityId'],
                 Logins = logins
               )
-              return {
-                AccessKeyId: res_credentials['Credentials']['AccessKeyId'],
-                SecretKey: res_credentials['Credentials']['SecretKey']
+              logger.info(res_credentials)
+              logger.info(res_credentials['Credentials'])
+
+              tmp = event['methodArn'].split(':')
+              apiGatewayArnTmp = tmp[5].split('/')
+              awsAccountId = tmp[4]
+              awsRegion = tmp[3]
+              awsRestApiId = apiGatewayArnTmp[0]
+              awsStage = apiGatewayArnTmp[1]
+
+              ret = {
+                'principalId': 'user|a1b2c3d4',
+                'policyDocument': {
+                  'Version': '2012-10-17',
+                  'Statement': [{
+                    'Action': 'execute-api:Invoke',
+                    'Effect': 'Allow',
+                    'Resource': [
+                      'arn:aws:execute-api:%s:%s:%s/%s/*/*' % (awsRegion, awsAccountId, awsRestApiId, awsStage)
+                    ]
+                  }]
+                },
+                'context': {
+                  'AccessKeyId': res_credentials['Credentials']['AccessKeyId'],
+                  'SecretKey': res_credentials['Credentials']['SecretKey']
+                }
               }
+              logger.info(json.dumps(ret))
+              return ret
             except Exception as e:
               logger.error(e)
       Handler: index.handler
@@ -134,15 +159,6 @@ Resources:
       Path: /
       ManagedPolicyArns:
       - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-#      Policies:
-#      - PolicyName: GetCredentialsFunctionPolicy
-#        PolicyDocument:
-#          Version: 2012-10-17
-#          Statement:
-#          - Effect: Allow
-#            Action:
-#            - cognito-identity:GetId
-#            Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*"
   AuthorizerInvokeRole:
     Type: AWS::IAM::Role
     Properties:
@@ -170,6 +186,11 @@ Resources:
     Type: AWS::Serverless::Api
     Properties:
       StageName: v1
+      MethodSettings:
+      - DataTraceEnabled: true
+        LoggingLevel: INFO
+        ResourcePath: "/*"
+        HttpMethod: "*"
       DefinitionBody:
         swagger: "2.0"
         info:

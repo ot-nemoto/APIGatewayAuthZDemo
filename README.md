@@ -173,89 +173,13 @@ curl -s -XGET ${INVOKE_URL} -H "Authentication:${TOKEN}" | jq
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-IDENTITY_POOL_ID=$(aws cloudformation describe-stacks \
-    --stack-name api-gateway-authz-demo \
-    --query 'Stacks[].Outputs[?OutputKey==`IdentityPoolId`].OutputValue' \
-    --output text)
-echo ${IDENTITY_POOL_ID}
-  # ap-northeast-1:d02c87b3-2db8-4d8d-8d40-a7985feb9c88
-
-USER_POOL_ID=$(aws cloudformation describe-stacks \
-    --stack-name api-gateway-authz-demo \
-    --query 'Stacks[].Outputs[?OutputKey==`UserPoolId`].OutputValue' \
-    --output text)
-echo ${USER_POOL_ID}
-  # ap-northeast-1_x6EoTroO6
-
-USER_POOL_CLIENT_ID=$(aws cloudformation describe-stacks \
-    --stack-name api-gateway-authz-demo \
-    --query 'Stacks[].Outputs[?OutputKey==`UserPoolClientId`].OutputValue' \
-    --output text)
-echo ${USER_POOL_CLIENT_ID}
-  # 5rgp27dcco2gq1k8n5f31mn8v5
-
-TOKEN=$(aws cognito-idp initiate-auth \
-     --auth-flow USER_PASSWORD_AUTH \
-     --client-id ${USER_POOL_CLIENT_ID} \
-     --auth-parameters USERNAME=${USERNAME},PASSWORD=${NEW_PASSWORD} \
-     --query 'AuthenticationResult.IdToken' \
-     --output text)
-echo ${TOKEN}
-
-IDENTITY_POOL_ID=$(aws cloudformation describe-stacks \
-    --stack-name api-gateway-authz-demo \
-    --query 'Stacks[].Outputs[?OutputKey==`IdentityPoolId`].OutputValue' \
-    --output text)
-echo ${IDENTITY_POOL_ID}
-  # ap-northeast-1:d02c87b3-2db8-4d8d-8d40-a7985feb9c88
-
-PROVIDER_NAME=$(aws cloudformation describe-stacks \
-    --stack-name api-gateway-authz-demo \
-    --query 'Stacks[].Outputs[?OutputKey==`UserPoolProviderName`].OutputValue' \
-    --output text)
-echo ${PROVIDER_NAME}
-  # cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_HYeuIrhic
-
-IDENTITY_ID=$(aws cognito-identity get-id \
-    --identity-pool-id ${IDENTITY_POOL_ID} \
-    --logins ${PROVIDER_NAME}=${TOKEN} \
-    --output text)
-echo ${IDENTITY_ID}
-  # ap-northeast-1:52cc7b28-2785-4c1e-b861-dba004ee0898
-
-aws cognito-identity get-credentials-for-identity \
-    --identity-id ${IDENTITY_ID} \
-    --logins ${PROVIDER_NAME}=${TOKEN}
-
-
-
-
-
-
-
-IDENTITY_ID=$(aws cognito-identity get-id \
-    --identity-pool-id ${IDENTITY_POOL_ID} \
-    --output text)
-echo ${IDENTITY_ID}
-  # ap-northeast-1:57b1d910-3623-4c07-9784-cf38bd42d005
-
-aws cognito-identity get-credentials-for-identity \
-    --identity-id ${IDENTITY_ID}
-
-
 refs
 - https://dev.classmethod.jp/cloud/aws/aws-cli-credentials-using-amazon-cognito/
 - https://www.wakuwakubank.com/posts/696-aws-cognito/
 - https://qiita.com/y13i/items/1923b47079bdf7c44eec
+
+- https://serverfault.com/questions/957686/how-to-upload-a-file-into-s3-bucket-using-cloudformation-script
+
+
+git clone https://github.com/awslabs/aws-apigateway-lambda-authorizer-blueprints.git
+
