@@ -53,6 +53,14 @@ Resources:
             - "cognito-sync:*"
             - "cognito-identity:*"
             Resource: "*"
+      - PolicyName: DescribeInstancesFunctionPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - ec2:DescribeInstances
+            Resource: "*"
   UnauthRole:
     Type: AWS::IAM::Role
     Properties:
@@ -118,7 +126,6 @@ Resources:
               awsStage = apiGatewayArnTmp[1]
 
               ret = {
-                'principalId': 'user|a1b2c3d4',
                 'policyDocument': {
                   'Version': '2012-10-17',
                   'Statement': [{
@@ -131,7 +138,8 @@ Resources:
                 },
                 'context': {
                   'AccessKeyId': res_credentials['Credentials']['AccessKeyId'],
-                  'SecretKey': res_credentials['Credentials']['SecretKey']
+                  'SecretKey': res_credentials['Credentials']['SecretKey'],
+                  'SessionToken': res_credentials['Credentials']['SessionToken']
                 }
               }
               logger.info(json.dumps(ret))
@@ -182,7 +190,7 @@ Resources:
             - lambda:InvokeFunction
             Resource: !GetAtt GetCredentialsFunction.Arn
 
-  Api:
+  APIGatewayAuthZDemoApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: v1
@@ -192,42 +200,34 @@ Resources:
         ResourcePath: "/*"
         HttpMethod: "*"
       DefinitionBody:
-        swagger: "2.0"
+        openapi: "3.0.1"
         info:
           version: "1.0"
           title: APIGatewayAuthZDemo
-        schemes:
-        - https
         paths:
           /:
             get:
-              consumes:
-              - application/json
-              produces:
-              - application/json
               responses:
                 "200":
                   description: "200 response"
-                  schema:
-                    $ref: "#/definitions/Empty"
+                  content: {}
               security:
               - APIGatewayAuthZDemo-authorizer: []
               x-amazon-apigateway-integration:
-                type: mock
+                type: aws
+                httpMethod: post
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DescribeInstancesFunction.Arn}/invocations"
                 responses:
                   default:
                     statusCode: "200"
-                    responseTemplates:
-                      application/json: |
-                        {
-                          "message": "Hello"
-                        }
                 requestTemplates:
                   application/json: |
                     {
-                      "statusCode": 200
+                      "AccessKeyId": "$context.authorizer.AccessKeyId",
+                      "SecretKey": "$context.authorizer.SecretKey",
+                      "SessionToken": "$context.authorizer.SessionToken"
                     }
-                passthroughBehavior: when_no_templates
+                passthroughBehavior: WHEN_NO_TEMPLATES
         securityDefinitions:
           APIGatewayAuthZDemo-authorizer:
             type: apiKey
@@ -239,19 +239,71 @@ Resources:
               authorizerCredentials: !GetAtt AuthorizerInvokeRole.Arn
               authorizerResultTtlInSeconds: 300
               type: token
-        definitions:
-          Empty:
-            type: object
-            title: Empty Schema
+  DescribeInstancesFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DescribeInstancesFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGatewayAuthZDemoApi}/*/GET/"
+  DescribeInstancesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.7
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          import boto3
+          def handler(event, context):
+            try:
+              logger.info(json.dumps(event))
+              client = boto3.client('ec2',
+                aws_access_key_id = event.get('AccessKeyId'),
+                aws_secret_access_key = event.get('SecretKey'),
+                aws_session_token = event.get('SessionToken'))
+              response = client.describe_instances()
+              instanceIds = []
+              for reservation in response.get('Reservations', []):
+                for instance in reservation.get('Instances', []):
+                  instanceIds.append(instance.get('InstanceId'))
+              return {
+                'instanceIds': instanceIds
+              }
+            except Exception as e:
+              logger.error(e)
+              raise e
+      Handler: index.handler
+      Role: !GetAtt DescribeInstancesFunctionRole.Arn
+  DescribeInstancesFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
 Outputs:
   UserPoolId:
     Value: !Ref UserPool
-  UserPoolProviderName:
-    Value: !GetAtt UserPool.ProviderName
   UserPoolClientId:
     Value: !Ref UserPoolClient
-  IdentityPoolId:
-    Value: !Ref IdentityPool
   InvokeURL:
-    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/v1/"
+    Value: !Sub "https://${APIGatewayAuthZDemoApi}.execute-api.${AWS::Region}.amazonaws.com/v1/"
+  APIGatewayLogUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logStream:group=API-Gateway-Execution-Logs_${APIGatewayAuthZDemoApi}/v1"
+  GetCredentialsFunctionLogUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logStream:group=/aws/lambda/${GetCredentialsFunction}"
+  DescribeInstancesFunctionLogUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logStream:group=/aws/lambda/${DescribeInstancesFunction}"
