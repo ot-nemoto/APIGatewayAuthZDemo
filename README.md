@@ -2,11 +2,16 @@
 
 ## 概要
 
-- API GatewayのリクエストにCognitoによる認証を組み込んだデモ
+- API GatewayのリクエストにCognitoによる認証・認可を組み込んだデモ
 
 ## 構成
 
-![構成](https://github.com/ot-nemoto/APIGatewayAuthDemo/blob/images/APIGatewayAuthDemo.png)
+![構成](https://github.com/ot-nemoto/APIGatewayAuthZDemo/blob/images/APIGatewayAuthZDemo.png)
+
+- APIを叩く前に、CognitoからTokenを取得する（このデモでは取得する箇所は aws-cli を使用し、実装してはいない）
+- APIへはCognitoから取得したTokenをヘッダーに付与し、リクエストを投げる
+- API GatewayはヘッダーのTokenでLambda（GetCredentialsFunction）へ認証を行う
+- 認証が通った場合、API GatewayはLambda（DescribeInstancesFunction）を起動し、EC2のインスタンスID一覧を取得する
 
 ## 前提条件
 
@@ -158,7 +163,10 @@ echo ${TOKEN}
 ```sh
 curl -s -XGET ${INVOKE_URL} -H "Authentication:${TOKEN}" | jq
   # {
-  #   "message": "Hello"
+  #   "instanceIds": [
+  #     "i-01234567",
+  #     "i-89012345"
+  #   ]
   # }
 ```
 
@@ -169,17 +177,8 @@ curl -s -XGET ${INVOKE_URL} -H "Authentication:${TOKEN}" | jq
 - API Gateway の swagger の定義では、securityDefinitions に認証方法を定義する
   - ここでリクエストヘッダーに `Authentication` を指定するように定義しているので、認証用のヘッダー名を変えたい場合は、ここの定義を修正する
   - ref https://github.com/ot-nemoto/APIGatewayAuthNDemo/blob/master/template.yaml#L60
-
-
-
-
-refs
-- https://dev.classmethod.jp/cloud/aws/aws-cli-credentials-using-amazon-cognito/
-- https://www.wakuwakubank.com/posts/696-aws-cognito/
-- https://qiita.com/y13i/items/1923b47079bdf7c44eec
-
-- https://serverfault.com/questions/957686/how-to-upload-a-file-into-s3-bucket-using-cloudformation-script
-
-
-git clone https://github.com/awslabs/aws-apigateway-lambda-authorizer-blueprints.git
-
+- 権限自体はCognitoのIDプールに持たせる
+  - 認証時、IDプールから認証成功時に付与されるRoleのcredentialsをAPI Gatewayへ返す
+  - credentialsは、`AccessKeyId`、`SecretKey`、`SessionToken`
+  - このcredentialsをAPI Gatwayから実行するLambda（DescribeInstancesFunction）へ渡す
+  - DescribeInstancesFunction はec2:DescribeInstancesのPolicyを持つサービスロールは持っていないが、このcredentialsを使って処理を実行する
