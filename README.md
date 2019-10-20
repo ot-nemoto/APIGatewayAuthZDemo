@@ -16,6 +16,8 @@
 ## 前提条件
 
 - aws-cli で構築するため、aws configure の設定は適宜実施していること
+- templateではAPI Gatewayのログを出力するようにCloudFormationに定義しています。該当RegionのAPI GatewayでAPI GateawyのRoleの設定が必要です。
+  - 未設定の場合は [api-gateway-settings](https://github.com/ot-nemoto/api-gateway-settings) でも設定できます。
 
 ## デプロイ
 
