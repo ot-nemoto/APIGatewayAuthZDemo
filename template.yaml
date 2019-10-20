@@ -1,0 +1,309 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameAttributes:
+      - email
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ExplicitAuthFlows:
+      - USER_PASSWORD_AUTH
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders:
+      - ClientId: !Ref UserPoolClient
+        ProviderName: !GetAtt UserPool.ProviderName
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthRole.Arn
+        unauthenticated: !GetAtt UnauthRole.Arn
+  AuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action: sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud: !Ref IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: authenticated
+      Policies:
+      - PolicyName: AuthPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - mobileanalytics:PutEvents
+            - "cognito-sync:*"
+            - "cognito-identity:*"
+            Resource: "*"
+      - PolicyName: DescribeInstancesFunctionPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - ec2:DescribeInstances
+            Resource: "*"
+  UnauthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action: sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud: !Ref IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: unauthenticated
+      Policies:
+      - PolicyName: UnauthPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - mobileanalytics:PutEvents
+            - "cognito-sync:*"
+            Resource: "*"
+  GetCredentialsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: get-credentials
+      Runtime: python3.7
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          import boto3
+          client = boto3.client('cognito-identity')
+          def handler(event, context):
+            response = {}
+            try:
+              logger.info(json.dumps(event))
+              logins = {}
+              logins[os.environ['PROVIDER_NAME']] = event['authorizationToken']
+              response = client.get_id(
+                IdentityPoolId = os.environ['IDENTITY_POOL_ID'],
+                Logins = logins
+              )
+              logger.info(json.dumps(response))
+              res_credentials = client.get_credentials_for_identity(
+                IdentityId = response['IdentityId'],
+                Logins = logins
+              )
+              logger.info(res_credentials)
+              logger.info(res_credentials['Credentials'])
+
+              tmp = event['methodArn'].split(':')
+              apiGatewayArnTmp = tmp[5].split('/')
+              awsAccountId = tmp[4]
+              awsRegion = tmp[3]
+              awsRestApiId = apiGatewayArnTmp[0]
+              awsStage = apiGatewayArnTmp[1]
+
+              ret = {
+                'policyDocument': {
+                  'Version': '2012-10-17',
+                  'Statement': [{
+                    'Action': 'execute-api:Invoke',
+                    'Effect': 'Allow',
+                    'Resource': [
+                      'arn:aws:execute-api:%s:%s:%s/%s/*/*' % (awsRegion, awsAccountId, awsRestApiId, awsStage)
+                    ]
+                  }]
+                },
+                'context': {
+                  'AccessKeyId': res_credentials['Credentials']['AccessKeyId'],
+                  'SecretKey': res_credentials['Credentials']['SecretKey'],
+                  'SessionToken': res_credentials['Credentials']['SessionToken']
+                }
+              }
+              logger.info(json.dumps(ret))
+              return ret
+            except Exception as e:
+              logger.error(e)
+      Handler: index.handler
+      Environment:
+        Variables:
+          IDENTITY_POOL_ID: !Ref IdentityPool
+          PROVIDER_NAME: !GetAtt UserPool.ProviderName
+      Role: !GetAtt GetCredentialsFunctionRole.Arn
+  GetCredentialsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action: 
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  AuthorizerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action: 
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: AuthorizerInvokePolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource: !GetAtt GetCredentialsFunction.Arn
+
+  APIGatewayAuthZDemoApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: v1
+      MethodSettings:
+      - DataTraceEnabled: true
+        LoggingLevel: INFO
+        ResourcePath: "/*"
+        HttpMethod: "*"
+      DefinitionBody:
+        openapi: "3.0.1"
+        info:
+          version: "1.0"
+          title: APIGatewayAuthZDemo
+        paths:
+          /:
+            get:
+              responses:
+                "200":
+                  description: "200 response"
+                  content: {}
+              security:
+              - APIGatewayAuthZDemo-authorizer: []
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: post
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DescribeInstancesFunction.Arn}/invocations"
+                responses:
+                  default:
+                    statusCode: "200"
+                requestTemplates:
+                  application/json: |
+                    {
+                      "AccessKeyId": "$context.authorizer.AccessKeyId",
+                      "SecretKey": "$context.authorizer.SecretKey",
+                      "SessionToken": "$context.authorizer.SessionToken"
+                    }
+                passthroughBehavior: WHEN_NO_TEMPLATES
+        securityDefinitions:
+          APIGatewayAuthZDemo-authorizer:
+            type: apiKey
+            name: Authentication
+            in: header
+            x-amazon-apigateway-authtype: custom
+            x-amazon-apigateway-authorizer:
+              authorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetCredentialsFunction.Arn}/invocations"
+              authorizerCredentials: !GetAtt AuthorizerInvokeRole.Arn
+              authorizerResultTtlInSeconds: 300
+              type: token
+  DescribeInstancesFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DescribeInstancesFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGatewayAuthZDemoApi}/*/GET/"
+  DescribeInstancesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.7
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          import boto3
+          def handler(event, context):
+            try:
+              logger.info(json.dumps(event))
+              client = boto3.client('ec2',
+                aws_access_key_id = event.get('AccessKeyId'),
+                aws_secret_access_key = event.get('SecretKey'),
+                aws_session_token = event.get('SessionToken'))
+              response = client.describe_instances()
+              instanceIds = []
+              for reservation in response.get('Reservations', []):
+                for instance in reservation.get('Instances', []):
+                  instanceIds.append(instance.get('InstanceId'))
+              return {
+                'instanceIds': instanceIds
+              }
+            except Exception as e:
+              logger.error(e)
+              raise e
+      Handler: index.handler
+      Role: !GetAtt DescribeInstancesFunctionRole.Arn
+  DescribeInstancesFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  InvokeURL:
+    Value: !Sub "https://${APIGatewayAuthZDemoApi}.execute-api.${AWS::Region}.amazonaws.com/v1/"
+  APIGatewayLogUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logStream:group=API-Gateway-Execution-Logs_${APIGatewayAuthZDemoApi}/v1"
+  GetCredentialsFunctionLogUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logStream:group=/aws/lambda/${GetCredentialsFunction}"
+  DescribeInstancesFunctionLogUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logStream:group=/aws/lambda/${DescribeInstancesFunction}"
